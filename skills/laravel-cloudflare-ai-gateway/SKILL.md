@@ -9,6 +9,21 @@ description: >-
 license: MIT
 user_invocable: true
 compatibility: Requires a Laravel or PHP project with laravel/ai or prism-php/prism. Needs a Cloudflare account.
+compatible_agents:
+  - Claude Code
+  - Cursor
+  - Laravel Boost
+  - Gemini CLI
+  - OpenCode
+  - Roo Code
+tags:
+  - laravel
+  - php
+  - cloudflare
+  - ai-gateway
+  - workers-ai
+  - observability
+  - prism
 metadata:
   author: mdick85
   version: "1.0.0"
