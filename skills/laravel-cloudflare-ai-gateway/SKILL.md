@@ -210,7 +210,18 @@ This provides a first-class `workers-ai` driver for Prism that handles Workers A
 ],
 ```
 
-**Prism PHP** (`config/prism.php`):
+**Important:** Projects using Laravel AI SDK also need a `config/prism.php` entry so Prism's `PrismManager` can resolve the provider config. If `config/prism.php` doesn't exist, publish it first with `php artisan vendor:publish --tag=prism-config`. Then add the workers-ai provider to `config/prism.php` under `providers`:
+
+```php
+'workers-ai' => [
+    'api_key' => env('CLOUDFLARE_AI_API_TOKEN', ''),
+    'url' => env('WORKERS_AI_URL'),
+],
+```
+
+Both entries are required — `ai.php` for the Laravel AI SDK driver mapping, `prism.php` for the underlying Prism provider resolution.
+
+**Prism PHP only** (`config/prism.php`) — if the project uses Prism directly without Laravel AI SDK, only this entry is needed:
 ```php
 'workers-ai' => [
     'api_key' => env('CLOUDFLARE_AI_API_TOKEN', ''),
