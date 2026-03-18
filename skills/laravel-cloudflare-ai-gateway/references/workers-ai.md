@@ -101,75 +101,60 @@ Models not on this list (e.g., `@cf/qwen/qwq-32b`, `@cf/mistralai/mistral-small-
 - Use short descriptions
 - Avoid nullable schema fields — use empty strings instead
 
-## SDK Compatibility (Critical)
+## SDK Compatibility
 
-Workers AI's `/compat` endpoint is **not fully OpenAI-compatible**. While it works via direct HTTP/curl, there are three breaking incompatibilities when used through the Laravel AI SDK or Prism PHP:
+Cloudflare redesigned the `/compat` endpoint in June 2025 as a "Unified API" — a drop-in replacement for the OpenAI API that works with existing OpenAI SDKs. In theory, this means array content format, structured output, and other OpenAI-spec features should work.
 
-| Feature | Via curl | Via Laravel AI SDK / Prism | Root cause |
-|---------|---------|---------------------------|------------|
-| Plain text generation | Works (string content) | **Broken** | SDK sends array content format |
-| Tool calling | Works | **Broken** (same reason) | User messages use array format |
-| Structured output (json_schema) | Partial (returns object) | **Crashes** | SDK expects string, gets object |
-| json_object mode | Not enforced | **Broken** | Model returns prose, not JSON |
-| Streaming | Works | **Broken** (same reason) | Array content format issue |
+In practice, some compatibility gaps have been observed. Test after setup — behavior may vary by model and may improve as Cloudflare updates `/compat`.
 
-### Issue 1: Array content format (affects ALL SDK requests)
+### Known issues (test to confirm — may be fixed)
 
-The Prism xAI driver always serializes user messages as arrays, even for plain text:
-```json
-{"role": "user", "content": [{"type": "text", "text": "What is 2+2?"}]}
+| Issue | Symptom | Root cause | Workaround |
+|-------|---------|------------|------------|
+| Array content format | Garbled responses or "Your input is not sufficient" | Prism xAI driver sends `content` as `[{type: "text", text: "..."}]` — `/compat` may not parse it | Direct HTTP with string content |
+| Structured output type mismatch | TypeError crash in `AssistantMessage` | `/compat` returns `content` as object instead of JSON string | Use paid provider for structured output |
+| json_object mode not enforced | Model returns prose instead of JSON | `/compat` doesn't enforce `response_format` constraint | Use `json_schema` mode or paid provider |
+
+### Verification
+
+After setup, test both direct HTTP and SDK calls:
+
+```php
+// 1. Direct HTTP (should always work)
+$response = Http::withToken(env('CLOUDFLARE_AI_API_TOKEN'))
+    ->post(env('WORKERS_AI_URL') . '/chat/completions', [
+        'model' => 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+        'messages' => [['role' => 'user', 'content' => 'Say hello in one word.']],
+    ]);
+
+// 2. SDK call (test if /compat handles array content)
+$response = agent(instructions: 'Be brief.')
+    ->prompt('Say hello.', provider: 'workers-ai', model: 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast');
 ```
 
-Workers AI `/compat` only accepts content as a string:
-```json
-{"role": "user", "content": "What is 2+2?"}
+If SDK calls fail but direct HTTP works, use the direct HTTP fallback for Workers AI while keeping the config ready for when `/compat` improves.
+
+### Direct HTTP fallback
+
+```php
+$response = Http::withToken(config('services.cloudflare.ai_token'))
+    ->post(config('services.cloudflare.workers_ai_url') . '/chat/completions', [
+        'model' => 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+        'messages' => [
+            ['role' => 'system', 'content' => 'You are a helpful assistant.'],
+            ['role' => 'user', 'content' => 'What is the capital of France?'],
+        ],
+    ]);
+$text = $response->json('choices.0.message.content');
 ```
 
-The array format is valid per the OpenAI spec, but Workers AI doesn't parse it correctly — the model receives garbled input and responds with nonsense like "Your input is not sufficient." This is a Cloudflare `/compat` endpoint limitation, not a Prism or Laravel AI SDK bug.
+### Responses API (newer models only)
 
-This affects every request through the SDK, not just multimodal messages.
+Some Workers AI models (`@cf/openai/gpt-oss-120b`, `@cf/openai/gpt-oss-20b`) support the OpenAI Responses API at `/ai/v1/responses`. For these models, the `openai` driver may work since it uses `/responses`. This is model-specific — most Workers AI models (Llama, Qwen, Mistral) still only support `/chat/completions`.
 
-### Issue 2: Structured output returns object, not string
+### What always works
 
-When using `json_schema` response format, Workers AI returns `content` as a parsed JSON object:
-```json
-{"content": {"intent": "interested", "confidence": 0.8}}
-```
-
-The OpenAI spec requires it as a JSON string:
-```json
-{"content": "{\"intent\":\"interested\",\"confidence\":0.8}"}
-```
-
-Prism's `Structured.php` does `new AssistantMessage($content)` which expects a string — receiving an object causes a TypeError crash. This breaks any agent using `HasStructuredOutput`.
-
-### Issue 3: json_object mode not enforced
-
-Workers AI does not enforce `response_format: {type: "json_object"}`. The model returns prose with markdown-embedded JSON instead of clean JSON, causing parse failures.
-
-### Workarounds
-
-1. **Direct HTTP calls** — bypass the SDK and use `Http::post()` with string content format:
-   ```php
-   $response = Http::withToken(config('services.cloudflare.ai_token'))
-       ->post(config('services.cloudflare.workers_ai_url') . '/chat/completions', [
-           'model' => 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-           'messages' => [
-               ['role' => 'user', 'content' => 'What is the capital of France?']  // string, not array
-           ],
-       ]);
-   ```
-   Works for plain text, but loses SDK features (tools, structured output, middleware, streaming helpers).
-
-2. **Wait for Cloudflare fix** — the `/compat` endpoint should handle array content format since it's valid per the OpenAI spec. This is the most likely resolution path.
-
-3. **Wait for Prism fix** — Prism could add a string-only fallback when no images are present in the content array. This would fix Issue 1 but not Issues 2 or 3.
-
-4. **Custom Prism provider** — write a Workers AI-specific Prism provider that serializes messages as strings and handles object content responses. Most effort, but gives full control.
-
-### What still works
-
-Gateway routing for **paid providers** (OpenAI, Anthropic, Gemini, Groq, etc.) works perfectly through the SDK — no issues. The incompatibilities are specific to Workers AI's `/compat` endpoint.
+Gateway routing for **paid providers** (OpenAI, Anthropic, Gemini, Groq, etc.) works perfectly through the SDK — no issues. The compatibility questions are specific to Workers AI's `/compat` endpoint.
 
 ## Limitations
 
