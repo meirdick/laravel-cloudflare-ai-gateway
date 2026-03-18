@@ -105,9 +105,11 @@ Ask which mode. If they choose anything other than pass-through (open), warn tha
 
 #### Question 3: Workers AI
 
-Explain: "Workers AI runs free open-source models (Llama, Qwen, Mistral, etc.) on Cloudflare's edge network. Free tier includes 10,000 neurons/day. It's great for chatbots, summaries, and internal tools where you don't need GPT-4/Claude-level quality."
+Explain: "Workers AI runs free open-source models (Llama, Qwen, Mistral, etc.) on Cloudflare's edge network. Free tier includes 10,000 neurons/day."
 
-Ask if they want to add Workers AI as a provider.
+**Important: warn the user about SDK compatibility.** Workers AI's `/compat` endpoint has known incompatibilities with the Laravel AI SDK and Prism PHP — the Prism xAI driver sends messages in an array format that `/compat` doesn't parse correctly, which breaks all SDK-based requests. Direct HTTP calls work fine. See `references/workers-ai.md` "SDK Compatibility" section for full details.
+
+Present the choice: "Workers AI can be added as a provider, but there's a current limitation: the Cloudflare `/compat` endpoint doesn't fully support the message format that the Laravel AI SDK and Prism PHP send. This means SDK calls (agents, structured output, tool use) won't work with Workers AI right now. Direct HTTP calls via `Http::post()` do work for simple text generation. Would you still like to add Workers AI?"
 
 If yes, instruct: "You'll need a Cloudflare API token with `Workers AI: Read` permission. Create one at dash.cloudflare.com/profile/api-tokens and add it as `CLOUDFLARE_AI_API_TOKEN=your-token` in your `.env` file."
 
@@ -265,6 +267,8 @@ After completing all changes, report:
 
 These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects. Read these before executing — they'll save you from the most common failures.
 
+- **Workers AI through the SDK is currently broken.** The Prism xAI driver sends all user messages as content arrays (`[{type: "text", text: "..."}]`), which is valid per the OpenAI spec but Workers AI's `/compat` endpoint doesn't parse correctly. The model receives garbled input and returns nonsense. This affects every request — not just multimodal. Direct HTTP calls with string content work fine. See `references/workers-ai.md` "SDK Compatibility" for workarounds. This is a Cloudflare `/compat` limitation, not a Prism bug.
+
 - **Workers AI MUST use the `xai` driver, not `openai`.** The `openai` driver (as of Prism v4+ / laravel/ai v0.3+) sends requests to `/responses`, but Workers AI's `/compat` endpoint only speaks `/chat/completions`. Using `'driver' => 'openai'` causes a silent 500 error with no useful message. The `xai`, `groq`, `mistral`, and `deepseek` drivers all use `/chat/completions` — `xai` is the conventional choice.
 
 - **Workers AI URL is `.../compat` — no trailing `/v1`.** The SDK appends `/chat/completions` automatically. If you add `/v1`, the final URL becomes `.../compat/v1/chat/completions` which returns "No route for that URI". The correct base URL ends at `/compat`.
@@ -281,26 +285,32 @@ These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects.
 
 ## Usage Examples
 
-### Workers AI in Laravel AI SDK
+### Workers AI via direct HTTP (recommended until SDK compatibility is fixed)
 
 ```php
-// Using default provider (if set to workers-ai)
-$response = agent(instructions: 'You are helpful.')->prompt('Hello!');
+// Simple text generation — works reliably
+$response = Http::withToken(env('CLOUDFLARE_AI_API_TOKEN'))
+    ->post(env('WORKERS_AI_URL') . '/chat/completions', [
+        'model' => 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+        'messages' => [
+            ['role' => 'system', 'content' => 'You are a helpful assistant.'],
+            ['role' => 'user', 'content' => 'What is the capital of France?'],  // must be string, not array
+        ],
+    ]);
 
-// Explicit provider and model
+$text = $response->json('choices.0.message.content');
+```
+
+### Workers AI via SDK (currently broken — see `references/workers-ai.md`)
+
+These examples will work once Cloudflare fixes `/compat` array content support or Prism adds a string fallback:
+
+```php
+// Laravel AI SDK — currently returns garbled responses
 $response = agent(instructions: 'You are helpful.')
     ->prompt('Hello!', provider: 'workers-ai', model: 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast');
 
-// Via attributes
-#[Provider('workers-ai')]
-#[Model('workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast')]
-```
-
-### Workers AI in Prism PHP
-
-```php
-use Prism\Prism\Facades\Prism;
-
+// Prism PHP — currently returns garbled responses
 Prism::text()
     ->using('xai', 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast')
     ->usingProviderConfig('xai', config('prism.providers.workers-ai'))

@@ -77,21 +77,39 @@ GEMINI_URL=https://gateway.ai.cloudflare.com/v1/.../google-ai-studio/v1beta/mode
 'model' => 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast'
 ```
 
+## Workers AI Returns Nonsense / "Your input is not sufficient"
+
+**Symptom:** Workers AI responds with garbled output, "Your input is not sufficient", or completely unrelated answers when called through the Laravel AI SDK or Prism PHP.
+
+**Cause:** The Prism xAI driver serializes all user messages as content arrays (`[{type: "text", text: "..."}]`), which is valid per the OpenAI spec. But Workers AI's `/compat` endpoint only accepts `content` as a plain string. The model receives the array structure as garbled input.
+
+**This affects ALL requests through the SDK**, not just multimodal messages.
+
+**Fix:** This is a `/compat` endpoint limitation. Use direct `Http::post()` calls with string content format, or route to a paid provider for SDK usage. See `references/workers-ai.md` "SDK Compatibility" section for full details and workarounds.
+
+## Workers AI Structured Output Crashes (TypeError)
+
+**Symptom:** `TypeError` or crash in `AssistantMessage` when using `HasStructuredOutput` agents or `Prism::structured()` with Workers AI.
+
+**Cause:** Workers AI returns `content` as a parsed JSON object (`{"intent": "interested"}`) instead of a JSON string (`"{\"intent\": \"interested\"}"`) as the OpenAI spec requires. Prism's `Structured.php` expects a string and crashes when it gets an object.
+
+**Fix:** Do not use structured output with Workers AI through the SDK. Use a paid provider (OpenAI, Anthropic) for structured output needs, or use direct HTTP calls and parse the response yourself.
+
 ## Multimodal Content Rejected
 
 **Symptom:** `"Type mismatch of '/messages/0/content', 'array' not in 'string'"`.
 
-**Cause:** The `/compat` endpoint only accepts string content in messages. OpenAI-format multimodal arrays are not supported.
+**Cause:** The `/compat` endpoint only accepts string content in messages. This is the same root cause as the "nonsense response" issue above — the Prism xAI driver always sends array format, even for text-only messages.
 
 **Fix:** Route vision/OCR requests to OpenAI or Anthropic through the gateway instead of Workers AI.
 
 ## JSON Mode Failures
 
-**Symptom:** `"This model doesn't support JSON Schema"` or `"JSON Mode couldn't be met"`.
+**Symptom:** `"This model doesn't support JSON Schema"` or `"JSON Mode couldn't be met"`, or model returns prose with markdown-embedded JSON instead of clean JSON.
 
-**Cause:** The model doesn't support JSON mode, or the schema is too complex.
+**Cause:** Either the model doesn't support JSON mode, the schema is too complex, or you're using `json_object` mode (which Workers AI doesn't enforce — the model ignores the constraint and returns prose).
 
-**Fix:** Use a supported model (see `references/workers-ai.md` for the list). Keep schemas simple: under ~8 fields, short names, no nullable fields.
+**Fix:** For `json_schema`: use a supported model (see `references/workers-ai.md` for the list) and keep schemas simple (under ~8 fields, short names, no nullable fields). For `json_object`: this mode is unreliable on Workers AI — use `json_schema` with an explicit schema instead, or use a paid provider.
 
 ## Streaming Issues
 

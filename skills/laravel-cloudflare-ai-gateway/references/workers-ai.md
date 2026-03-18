@@ -94,28 +94,95 @@ Workers AI supports JSON mode (`response_format: {type: 'json_schema', ...}`) on
 
 Models not on this list (e.g., `@cf/qwen/qwq-32b`, `@cf/mistralai/mistral-small-3.1-24b-instruct`) return `"This model doesn't support JSON Schema"`.
 
-**Tips for reliable JSON mode:**
+**Tips for reliable JSON mode (via curl/direct HTTP only — see SDK limitations below):**
 - Keep field names short and simple
 - Avoid deeply nested objects
 - Keep total fields under ~8
 - Use short descriptions
 - Avoid nullable schema fields — use empty strings instead
 
+## SDK Compatibility (Critical)
+
+Workers AI's `/compat` endpoint is **not fully OpenAI-compatible**. While it works via direct HTTP/curl, there are three breaking incompatibilities when used through the Laravel AI SDK or Prism PHP:
+
+| Feature | Via curl | Via Laravel AI SDK / Prism | Root cause |
+|---------|---------|---------------------------|------------|
+| Plain text generation | Works (string content) | **Broken** | SDK sends array content format |
+| Tool calling | Works | **Broken** (same reason) | User messages use array format |
+| Structured output (json_schema) | Partial (returns object) | **Crashes** | SDK expects string, gets object |
+| json_object mode | Not enforced | **Broken** | Model returns prose, not JSON |
+| Streaming | Works | **Broken** (same reason) | Array content format issue |
+
+### Issue 1: Array content format (affects ALL SDK requests)
+
+The Prism xAI driver always serializes user messages as arrays, even for plain text:
+```json
+{"role": "user", "content": [{"type": "text", "text": "What is 2+2?"}]}
+```
+
+Workers AI `/compat` only accepts content as a string:
+```json
+{"role": "user", "content": "What is 2+2?"}
+```
+
+The array format is valid per the OpenAI spec, but Workers AI doesn't parse it correctly — the model receives garbled input and responds with nonsense like "Your input is not sufficient." This is a Cloudflare `/compat` endpoint limitation, not a Prism or Laravel AI SDK bug.
+
+This affects every request through the SDK, not just multimodal messages.
+
+### Issue 2: Structured output returns object, not string
+
+When using `json_schema` response format, Workers AI returns `content` as a parsed JSON object:
+```json
+{"content": {"intent": "interested", "confidence": 0.8}}
+```
+
+The OpenAI spec requires it as a JSON string:
+```json
+{"content": "{\"intent\":\"interested\",\"confidence\":0.8}"}
+```
+
+Prism's `Structured.php` does `new AssistantMessage($content)` which expects a string — receiving an object causes a TypeError crash. This breaks any agent using `HasStructuredOutput`.
+
+### Issue 3: json_object mode not enforced
+
+Workers AI does not enforce `response_format: {type: "json_object"}`. The model returns prose with markdown-embedded JSON instead of clean JSON, causing parse failures.
+
+### Workarounds
+
+1. **Direct HTTP calls** — bypass the SDK and use `Http::post()` with string content format:
+   ```php
+   $response = Http::withToken(config('services.cloudflare.ai_token'))
+       ->post(config('services.cloudflare.workers_ai_url') . '/chat/completions', [
+           'model' => 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+           'messages' => [
+               ['role' => 'user', 'content' => 'What is the capital of France?']  // string, not array
+           ],
+       ]);
+   ```
+   Works for plain text, but loses SDK features (tools, structured output, middleware, streaming helpers).
+
+2. **Wait for Cloudflare fix** — the `/compat` endpoint should handle array content format since it's valid per the OpenAI spec. This is the most likely resolution path.
+
+3. **Wait for Prism fix** — Prism could add a string-only fallback when no images are present in the content array. This would fix Issue 1 but not Issues 2 or 3.
+
+4. **Custom Prism provider** — write a Workers AI-specific Prism provider that serializes messages as strings and handles object content responses. Most effort, but gives full control.
+
+### What still works
+
+Gateway routing for **paid providers** (OpenAI, Anthropic, Gemini, Groq, etc.) works perfectly through the SDK — no issues. The incompatibilities are specific to Workers AI's `/compat` endpoint.
+
 ## Limitations
-
-### No multimodal through `/compat`
-The `/compat` endpoint only accepts `content` as a **string**. OpenAI-format multimodal content arrays (`[{type: 'text', ...}, {type: 'image_url', ...}]`) are rejected with: `"Type mismatch of '/messages/0/content', 'array' not in 'string'"`.
-
-For vision/OCR, route to OpenAI (gpt-4o-mini) or Anthropic via AI Gateway instead.
 
 ### Embeddings need separate config
 The `xai` driver only supports text generation — not embeddings. If you need Workers AI embeddings, add a separate `workers-ai-embeddings` provider using `'driver' => 'openai'` (the OpenAI driver's embeddings handler posts to `/embeddings`, which `/compat` supports).
 
 ### Llama 4 Scout multimodal
-`@cf/meta/llama-4-scout-17b-16e-instruct` is natively multimodal and categorized as "Text Generation" (not Image-to-Text), so it may work through `/compat` with multimodal content arrays. This is untested.
+`@cf/meta/llama-4-scout-17b-16e-instruct` is natively multimodal and categorized as "Text Generation" (not Image-to-Text), so it may work through `/compat` with multimodal content arrays. This is untested — and given Issue 1 above, unlikely to work through the SDK regardless.
 
 ## Cost Tiering
 
-**Tier 1 — Workers AI (free/credits):** Chatbots, task generation, entity summaries, intent classification, content suggestions, internal tools.
+Use Workers AI for features where direct HTTP calls are acceptable (no SDK). For anything requiring the Laravel AI SDK or Prism PHP, use paid providers through the gateway until the SDK compatibility issues are resolved.
 
-**Tier 2 — Paid providers via AI Gateway:** Document generation, complex analysis, vision/OCR, quality-critical output, strict structured output compliance.
+**Tier 1 — Workers AI via direct HTTP (free/credits):** Simple chatbots, content suggestions, internal tools — anywhere you can use `Http::post()` directly.
+
+**Tier 2 — Paid providers via AI Gateway (through SDK):** Agents, structured output, tool calling, document generation, vision/OCR, quality-critical output — anything requiring the full SDK feature set.
