@@ -194,12 +194,17 @@ Use these env var names and default URLs:
 
 #### Step 2: Workers AI provider (if requested)
 
-Workers AI requires the `xai` driver because the `/compat` endpoint only speaks `/chat/completions`. The `openai` driver uses `/responses` (as of Prism v4+), which causes 500 errors. See `references/workers-ai.md` for the full explanation.
+**First, install the Workers AI provider package:**
+```bash
+composer require meirdick/prism-workers-ai
+```
+
+This provides a first-class `workers-ai` driver for Prism that handles Workers AI's content format differences and structured output quirks. See `references/workers-ai.md` for details.
 
 **Laravel AI SDK** (`config/ai.php`):
 ```php
 'workers-ai' => [
-    'driver' => 'xai',
+    'driver' => 'workers-ai',
     'key' => env('CLOUDFLARE_AI_API_TOKEN'),
     'url' => env('WORKERS_AI_URL'),
 ],
@@ -282,9 +287,9 @@ After completing all changes, report:
 
 These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects. Read these before executing — they'll save you from the most common failures.
 
-- **Workers AI `/compat` has a content format quirk.** The Prism xAI driver sends user messages as content arrays (`[{type: "text", text: "..."}]`), which is valid OpenAI spec. Workers AI's `/compat` may not parse this correctly in all cases, returning garbled responses. If this happens, see `references/workers-ai.md` "SDK Compatibility" for workarounds including a direct HTTP fallback. This is a Cloudflare `/compat` limitation that may be resolved in a future update.
+- **Workers AI requires the `meirdick/prism-workers-ai` package.** The built-in xAI driver sends user content as arrays and crashes on object content from structured output. The `workers-ai` driver handles these differences natively. Install it with `composer require meirdick/prism-workers-ai`.
 
-- **Workers AI uses the `xai` driver, not `openai`.** The `openai` driver (as of Prism v4+ / laravel/ai v0.3+) sends requests to `/responses`, but Workers AI's `/compat` endpoint only speaks `/chat/completions`. Using `'driver' => 'openai'` causes a silent 500 error with no useful message. The `xai`, `groq`, `mistral`, and `deepseek` drivers all use `/chat/completions` — `xai` is the conventional choice.
+- **Do not use the `openai` driver for Workers AI.** The `openai` driver (as of Prism v4+ / laravel/ai v0.3+) sends requests to `/responses`, but Workers AI's `/compat` endpoint only speaks `/chat/completions`. Using `'driver' => 'openai'` causes a silent 500 error.
 
 - **Workers AI URL is `.../compat` — no trailing `/v1`.** The SDK appends `/chat/completions` automatically. If you add `/v1`, the final URL becomes `.../compat/v1/chat/completions` which returns "No route for that URI". The correct base URL ends at `/compat`.
 
@@ -320,16 +325,25 @@ $response = agent(instructions: 'You are helpful.')
 ```php
 use Prism\Prism\Facades\Prism;
 
+// Text generation
 Prism::text()
-    ->using('xai', 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast')
-    ->usingProviderConfig('xai', config('prism.providers.workers-ai'))
+    ->using('workers-ai', 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast')
     ->withPrompt('Hello!')
     ->asText();
+
+// Structured output (works natively — no TypeError)
+Prism::structured()
+    ->using('workers-ai', 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast')
+    ->withSchema($schema)
+    ->withPrompt('Classify this intent.')
+    ->generate();
+
+// Embeddings
+Prism::embeddings()
+    ->using('workers-ai', 'workers-ai/@cf/baai/bge-large-en-v1.5')
+    ->fromInput('Hello world')
+    ->generate();
 ```
-
-### Known `/compat` limitation
-
-The Prism xAI driver sends user messages as content arrays, which is valid per the OpenAI spec but Workers AI's `/compat` endpoint may not parse correctly in all cases. If you get garbled responses or "Your input is not sufficient", see `references/workers-ai.md` for the root cause and workarounds (direct HTTP fallback, or using the `openai` driver for embeddings-only).
 
 ### Rollback
 

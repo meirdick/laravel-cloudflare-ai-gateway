@@ -22,24 +22,25 @@ The SDK appends `/chat/completions` automatically, so the final request goes to 
 
 **Important:** Do NOT add `/v1` after `/compat`. The URL `.../compat/v1/chat/completions` will return "No route for that URI".
 
-## Why `xai` Driver, Not `openai`
+## Driver: `workers-ai` (via `meirdick/prism-workers-ai`)
 
-This is the most common source of 500 errors with Workers AI.
+**Install:**
+```bash
+composer require meirdick/prism-workers-ai
+```
 
-**The problem:** As of Prism v4+ / laravel/ai v0.3+, the `openai` driver uses OpenAI's newer `/responses` API endpoint. Workers AI's `/compat` endpoint only speaks `/chat/completions`. Requests sent to `.../compat/responses` return a 500 error.
+This package provides a first-class `workers-ai` driver for Prism PHP that fixes three issues with the built-in `xai` driver:
 
-**The fix:** Use the `xai` driver. These drivers all use `/chat/completions`:
-- `xai`
-- `groq`
-- `mistral`
-- `deepseek`
+1. **String content format** — The xAI driver wraps user content in `[{type: "text", text: "..."}]` (array format). Workers AI `/compat` expects a plain string for text-only messages. The `workers-ai` driver sends string content.
+2. **Object content in structured output** — `/compat` may return `content` as a JSON object instead of a string, causing a TypeError crash. The `workers-ai` driver handles this gracefully.
+3. **Embeddings support** — The xAI driver doesn't support embeddings. The `workers-ai` driver has a built-in Embeddings handler.
 
-Any of them would work, but `xai` is the conventional choice for Workers AI.
+**Do NOT use the `openai` driver.** It uses `/responses` (as of Prism v4+ / laravel/ai v0.3+), which Workers AI doesn't support. This causes a silent 500 error.
 
 ```php
 // Laravel AI SDK (config/ai.php)
 'workers-ai' => [
-    'driver' => 'xai',       // NOT 'openai' — causes 500 errors
+    'driver' => 'workers-ai',
     'key' => env('CLOUDFLARE_AI_API_TOKEN'),
     'url' => env('WORKERS_AI_URL'),
 ],
@@ -103,71 +104,36 @@ Models not on this list (e.g., `@cf/qwen/qwq-32b`, `@cf/mistralai/mistral-small-
 
 ## SDK Compatibility
 
-Cloudflare redesigned the `/compat` endpoint in June 2025 as a "Unified API" — a drop-in replacement for the OpenAI API that works with existing OpenAI SDKs. In theory, this means array content format, structured output, and other OpenAI-spec features should work.
+With the `meirdick/prism-workers-ai` package installed, all major Prism features work through Workers AI:
 
-In practice, some compatibility gaps have been observed. Test after setup — behavior may vary by model and may improve as Cloudflare updates `/compat`.
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Text generation | Works | String content format, no garbled responses |
+| Structured output | Works | Handles object content gracefully |
+| Tool calling | Works | Standard OpenAI function calling format |
+| Streaming | Works | SSE streaming via `/chat/completions` |
+| Embeddings | Works | Via `/embeddings` endpoint |
+| json_schema mode | Works | On supported models (see JSON Mode section) |
 
-### Known issues (test to confirm — may be fixed)
+### Remaining `/compat` notes
 
-| Issue | Symptom | Root cause | Workaround |
-|-------|---------|------------|------------|
-| Array content format | Garbled responses or "Your input is not sufficient" | Prism xAI driver sends `content` as `[{type: "text", text: "..."}]` — `/compat` may not parse it | Direct HTTP with string content |
-| Structured output type mismatch | TypeError crash in `AssistantMessage` | `/compat` returns `content` as object instead of JSON string | Use paid provider for structured output |
-| json_object mode not enforced | Model returns prose instead of JSON | `/compat` doesn't enforce `response_format` constraint | Use `json_schema` mode or paid provider |
-
-### Verification
-
-After setup, test both direct HTTP and SDK calls:
-
-```php
-// 1. Direct HTTP (should always work)
-$response = Http::withToken(env('CLOUDFLARE_AI_API_TOKEN'))
-    ->post(env('WORKERS_AI_URL') . '/chat/completions', [
-        'model' => 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-        'messages' => [['role' => 'user', 'content' => 'Say hello in one word.']],
-    ]);
-
-// 2. SDK call (test if /compat handles array content)
-$response = agent(instructions: 'Be brief.')
-    ->prompt('Say hello.', provider: 'workers-ai', model: 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast');
-```
-
-If SDK calls fail but direct HTTP works, use the direct HTTP fallback for Workers AI while keeping the config ready for when `/compat` improves.
-
-### Direct HTTP fallback
-
-```php
-$response = Http::withToken(config('services.cloudflare.ai_token'))
-    ->post(config('services.cloudflare.workers_ai_url') . '/chat/completions', [
-        'model' => 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-        'messages' => [
-            ['role' => 'system', 'content' => 'You are a helpful assistant.'],
-            ['role' => 'user', 'content' => 'What is the capital of France?'],
-        ],
-    ]);
-$text = $response->json('choices.0.message.content');
-```
-
-### Responses API (newer models only)
-
-Some Workers AI models (`@cf/openai/gpt-oss-120b`, `@cf/openai/gpt-oss-20b`) support the OpenAI Responses API at `/ai/v1/responses`. For these models, the `openai` driver may work since it uses `/responses`. This is model-specific — most Workers AI models (Llama, Qwen, Mistral) still only support `/chat/completions`.
+- **json_object mode** may not be enforced by Workers AI — use `json_schema` mode instead.
+- **Multimodal** (image content) is untested through `/compat` — may work with models like `@cf/meta/llama-4-scout-17b-16e-instruct`.
+- **Responses API** — Some models (`@cf/openai/gpt-oss-120b`) support `/responses`, but most Workers AI models only support `/chat/completions`.
 
 ### What always works
 
-Gateway routing for **paid providers** (OpenAI, Anthropic, Gemini, Groq, etc.) works perfectly through the SDK — no issues. The compatibility questions are specific to Workers AI's `/compat` endpoint.
+Gateway routing for **paid providers** (OpenAI, Anthropic, Gemini, Groq, etc.) works perfectly through the SDK — no issues. The compatibility notes above are specific to Workers AI's `/compat` endpoint.
 
 ## Limitations
 
-### Embeddings need separate config
-The `xai` driver only supports text generation — not embeddings. If you need Workers AI embeddings, add a separate `workers-ai-embeddings` provider using `'driver' => 'openai'` (the OpenAI driver's embeddings handler posts to `/embeddings`, which `/compat` supports).
-
 ### Llama 4 Scout multimodal
-`@cf/meta/llama-4-scout-17b-16e-instruct` is natively multimodal and categorized as "Text Generation" (not Image-to-Text), so it may work through `/compat` with multimodal content arrays. This is untested — and given Issue 1 above, unlikely to work through the SDK regardless.
+`@cf/meta/llama-4-scout-17b-16e-instruct` is natively multimodal and categorized as "Text Generation" (not Image-to-Text). Multimodal content through `/compat` is untested.
 
 ## Cost Tiering
 
-Use Workers AI for features where direct HTTP calls are acceptable (no SDK). For anything requiring the Laravel AI SDK or Prism PHP, use paid providers through the gateway until the SDK compatibility issues are resolved.
+With the `workers-ai` driver, Workers AI can be used through the full SDK — no need for direct HTTP fallbacks.
 
-**Tier 1 — Workers AI via direct HTTP (free/credits):** Simple chatbots, content suggestions, internal tools — anywhere you can use `Http::post()` directly.
+**Tier 1 — Workers AI (free/credits):** Chatbots, content suggestions, internal tools, embeddings, simple structured output — anything where open-source model quality is sufficient.
 
-**Tier 2 — Paid providers via AI Gateway (through SDK):** Agents, structured output, tool calling, document generation, vision/OCR, quality-critical output — anything requiring the full SDK feature set.
+**Tier 2 — Paid providers via AI Gateway:** Complex agents, quality-critical output, vision/OCR, large document processing — where you need GPT-4/Claude-level quality.
