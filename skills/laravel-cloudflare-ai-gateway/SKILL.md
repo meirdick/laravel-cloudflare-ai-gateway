@@ -5,7 +5,11 @@ description: >-
   Gateway for observability, caching, and rate limiting. Adds Workers AI as a
   free open-source model provider. Supports Laravel AI SDK (laravel/ai) and
   Prism PHP (prism-php/prism). Use when the user mentions Cloudflare AI Gateway,
-  Workers AI, AI observability, or wants to proxy AI provider traffic.
+  Workers AI, AI observability, AI cost monitoring, or wants to proxy AI provider
+  traffic. Also trigger when someone asks about logging AI requests, caching AI
+  responses, rate limiting AI calls, monitoring AI usage, using free AI models,
+  reducing AI costs, or routing OpenAI/Anthropic/Gemini traffic through a gateway
+  — even if they don't explicitly mention "Cloudflare" or "gateway".
 license: MIT
 user_invocable: true
 compatibility: Requires a Laravel or PHP project with laravel/ai or prism-php/prism. Needs a Cloudflare account.
@@ -190,7 +194,7 @@ Use these env var names and default URLs:
 
 #### Step 2: Workers AI provider (if requested)
 
-**CRITICAL: Use `xai` driver, NOT `openai`.** The `openai` driver uses `/responses` which Workers AI doesn't support — it causes 500 errors. See `references/workers-ai.md` for details.
+Workers AI requires the `xai` driver because the `/compat` endpoint only speaks `/chat/completions`. The `openai` driver uses `/responses` (as of Prism v4+), which causes 500 errors. See `references/workers-ai.md` for the full explanation.
 
 **Laravel AI SDK** (`config/ai.php`):
 ```php
@@ -254,6 +258,24 @@ After completing all changes, report:
    - If Workers AI: "Add your Cloudflare API token as `CLOUDFLARE_AI_API_TOKEN` in `.env`"
    - Run `php artisan config:clear` if config is cached
    - Verify in Cloudflare dashboard (AI > AI Gateway > [gateway-name] > Analytics)
+
+---
+
+## Gotchas
+
+These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects. Read these before executing — they'll save you from the most common failures.
+
+- **Workers AI MUST use the `xai` driver, not `openai`.** The `openai` driver (as of Prism v4+ / laravel/ai v0.3+) sends requests to `/responses`, but Workers AI's `/compat` endpoint only speaks `/chat/completions`. Using `'driver' => 'openai'` causes a silent 500 error with no useful message. The `xai`, `groq`, `mistral`, and `deepseek` drivers all use `/chat/completions` — `xai` is the conventional choice.
+
+- **Workers AI URL is `.../compat` — no trailing `/v1`.** The SDK appends `/chat/completions` automatically. If you add `/v1`, the final URL becomes `.../compat/v1/chat/completions` which returns "No route for that URI". The correct base URL ends at `/compat`.
+
+- **Gemini URL must include `/v1beta/models`.** Unlike other providers where the gateway path is just the provider name (e.g., `/openai`), Gemini requires `.../google-ai-studio/v1beta/models` because Gemini's API expects this prefix in every request path.
+
+- **The env var is `CLOUDFLARE_AI_API_TOKEN`, not `CLOUDFLARE_AI_API_KEY`.** Cloudflare's convention is "API Token" (scoped) vs "API Key" (global). Workers AI needs a scoped token with `Workers AI: Read` permission.
+
+- **Laravel AI SDK doesn't have `url` fields by default.** Unlike Prism PHP (where every provider has a `url` field reading from env), the Laravel AI SDK's default `config/ai.php` omits `url` entirely. You must add it with an `env()` fallback so gateway routing is opt-in via `.env`.
+
+- **Model names need the `workers-ai/` prefix through `/compat`.** The AI Gateway uses this prefix to route to the correct provider. Without it, the gateway doesn't know where to send the request. The response strips the prefix automatically.
 
 ---
 
