@@ -13,6 +13,18 @@ Workers AI has two endpoints through AI Gateway:
 
 **Always use `/compat`.** The compat endpoint speaks the standard OpenAI `/chat/completions` format that Laravel AI SDK and Prism PHP expect. The native endpoint uses a different request/response format that isn't compatible with these frameworks.
 
+### Two endpoints, two model formats
+
+| Endpoint | URL pattern | Model in JSON body | How gateway determines provider |
+|----------|------------|-------------------|-------------------------------|
+| **Universal compat** (recommended) | `.../compat` | `workers-ai/@cf/meta/...` | Reads `workers-ai/` prefix from model name |
+| **Provider-specific** | `.../workers-ai/v1` | `@cf/meta/...` | Already knows from `workers-ai` in URL path |
+
+**Always use `/compat`.** It's the recommended endpoint because:
+- It uses the standard OpenAI `/chat/completions` format
+- It supports routing to multiple providers from one endpoint
+- The `workers-ai/` model prefix is stripped in the response — you get back just `@cf/...`
+
 The full URL pattern is:
 ```
 https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway-name}/compat

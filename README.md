@@ -12,7 +12,7 @@ A Claude Code skill that configures Laravel and PHP projects to route AI traffic
 
 **Claude Code CLI:**
 ```bash
-claude skill add --from meirdick/laravel-cloudflare-ai-gateway
+npx skills add meirdick/laravel-cloudflare-ai-gateway
 ```
 
 **Laravel Cloud (Boost):**
