@@ -83,6 +83,7 @@ All model names must be prefixed with `workers-ai/` when routing through the AI 
 
 | Model | Use Case | Notes |
 |-------|----------|-------|
+| `workers-ai/@cf/moonshotai/kimi-k2.5` | **Frontier — smartest** | 256K context, tool calling, vision, structured output. Reasoning model (see below) |
 | `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast` | General purpose | Best balance of quality and speed |
 | `workers-ai/@cf/meta/llama-3.1-8b-instruct` | Cheap/fast tasks | Smallest, fastest, lowest cost |
 | `workers-ai/@cf/qwen/qwq-32b` | Reasoning | Multi-step reasoning tasks |
@@ -97,6 +98,7 @@ All model names must be prefixed with `workers-ai/` when routing through the AI 
 Workers AI supports JSON mode (`response_format: {type: 'json_schema', ...}`) only with specific models:
 
 **Supported models:**
+- `@cf/moonshotai/kimi-k2.5`
 - `@cf/meta/llama-3.3-70b-instruct-fp8-fast`
 - `@cf/meta/llama-3.1-70b-instruct`
 - `@cf/meta/llama-3.1-8b-instruct` / `llama-3.1-8b-instruct-fast`
@@ -114,6 +116,19 @@ Models not on this list (e.g., `@cf/qwen/qwq-32b`, `@cf/mistralai/mistral-small-
 - Use short descriptions
 - Avoid nullable schema fields — use empty strings instead
 
+## Reasoning Models (Kimi K2.5)
+
+`@cf/moonshotai/kimi-k2.5` is a **reasoning model** — it thinks before answering. Responses contain:
+- `reasoning_content`: chain-of-thought (the model's thinking process)
+- `content`: the final answer
+
+**Key considerations:**
+- **Reasoning tokens count against `max_tokens`.** If `max_tokens` is too low, all tokens go to reasoning and `content` comes back null (Prism returns empty string). Set `max_tokens` to **1000+ for simple tasks, 2000+ for complex ones.**
+- **`meirdick/prism-workers-ai` v0.3.0+** extracts `reasoning_content` and surfaces it in `$response->steps[0]->additionalContent['thinking']` for non-streaming, and as `ThinkingEvent` / `ThinkingStartEvent` / `ThinkingCompleteEvent` for streaming.
+- **Array content format works** — unlike other Workers AI models, Kimi K2.5 accepts Prism's `[{type: "text", text: "..."}]` format through `/compat`. No special handling needed.
+
+**Session affinity (prefix caching):** For multi-turn conversations, pass `x-session-affinity` header with a consistent session ID to route requests to the same model instance. This enables prefix caching (lower TTFT, discounted token costs).
+
 ## SDK Compatibility
 
 With the `meirdick/prism-workers-ai` package installed, all major Prism features work through Workers AI:
@@ -126,11 +141,12 @@ With the `meirdick/prism-workers-ai` package installed, all major Prism features
 | Streaming | Works | SSE streaming via `/chat/completions` |
 | Embeddings | Works | Via `/embeddings` endpoint |
 | json_schema mode | Works | On supported models (see JSON Mode section) |
+| Reasoning content | Works | `additionalContent['thinking']` for text, `ThinkingEvent` for streaming |
 
 ### Remaining `/compat` notes
 
 - **json_object mode** may not be enforced by Workers AI — use `json_schema` mode instead.
-- **Multimodal** (image content) is untested through `/compat` — may work with models like `@cf/meta/llama-4-scout-17b-16e-instruct`.
+- **Multimodal** (image content) is untested through `/compat` — may work with models like `@cf/meta/llama-4-scout-17b-16e-instruct` or `@cf/moonshotai/kimi-k2.5`.
 - **Responses API** — Some models (`@cf/openai/gpt-oss-120b`) support `/responses`, but most Workers AI models only support `/chat/completions`.
 
 ### What always works
@@ -146,6 +162,8 @@ Gateway routing for **paid providers** (OpenAI, Anthropic, Gemini, Groq, etc.) w
 
 With the `workers-ai` driver, Workers AI can be used through the full SDK — no need for direct HTTP fallbacks.
 
-**Tier 1 — Workers AI (free/credits):** Chatbots, content suggestions, internal tools, embeddings, simple structured output — anything where open-source model quality is sufficient.
+**Tier 1a — Workers AI small models (free/credits, lowest cost):** Chatbots, content suggestions, internal tools, embeddings, simple structured output. Models: Llama 3.1 8B, Llama 3.3 70B.
 
-**Tier 2 — Paid providers via AI Gateway:** Complex agents, quality-critical output, vision/OCR, large document processing — where you need GPT-4/Claude-level quality.
+**Tier 1b — Workers AI frontier (free/credits, higher cost):** Complex reasoning, tool calling, document analysis (up to 256K context), quality-critical tasks, vision, agentic workflows. Models: Kimi K2.5.
+
+**Tier 2 — Paid providers via AI Gateway:** Tasks requiring specific provider capabilities (e.g., extended thinking, provider-specific APIs), or when Workers AI models don't meet quality bar.
