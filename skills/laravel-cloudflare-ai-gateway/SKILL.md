@@ -312,6 +312,10 @@ These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects.
 
 - **Model names need the `workers-ai/` prefix through `/compat`.** The AI Gateway uses this prefix to route to the correct provider. Without it, the gateway doesn't know where to send the request. The response strips the prefix automatically.
 
+- **Embeddings require `meirdick/prism-workers-ai` v0.4.1+.** Workers AI's `/compat/embeddings` endpoint omits `usage.total_tokens` from the response. Versions before v0.4.1 pass `null` to Laravel AI SDK's `EmbeddingsResponse(int $tokens)`, causing a TypeError. The fix defaults to `0`.
+
+- **Use `saveQuietly()` not `updateQuietly()` for pgvector columns.** `$model->updateQuietly(['embedding' => $array])` silently fails with pgvector — the array doesn't get cast to the vector format. Use `$model->embedding = $array; $model->saveQuietly();` instead.
+
 ---
 
 ## Usage Examples
@@ -354,6 +358,30 @@ Prism::embeddings()
     ->using('workers-ai', 'workers-ai/@cf/baai/bge-large-en-v1.5')
     ->fromInput('Hello world')
     ->generate();
+```
+
+### Embeddings in Laravel AI SDK
+
+```php
+use Illuminate\Support\Str;
+use Laravel\Ai\Embeddings;
+
+// Set default_for_embeddings to workers-ai in config/ai.php, then:
+$embedding = Str::of('custody schedule modification')->toEmbeddings();
+// Returns 1024-dim float array (bge-large-en-v1.5 default)
+
+// Batch embeddings:
+$response = Embeddings::for(['text one', 'text two'])->generate('workers-ai');
+
+// Store in pgvector (use saveQuietly, NOT updateQuietly):
+$model->embedding = $embedding;
+$model->saveQuietly();
+
+// Semantic search (auto-embeds the query string):
+$results = Model::query()
+    ->whereVectorSimilarTo('embedding', 'search query here')
+    ->limit(10)
+    ->get();
 ```
 
 ### Rollback

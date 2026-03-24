@@ -91,7 +91,7 @@ All model names must be prefixed with `workers-ai/` when routing through the AI 
 | `workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct` | Multilingual | Strong multilingual support |
 | `workers-ai/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b` | Reasoning (alt) | DeepSeek R1 distilled |
 | `workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct` | Multimodal | 131K context, MoE, function calling |
-| `workers-ai/@cf/baai/bge-large-en-v1.5` | Embeddings | Text embedding model |
+| `workers-ai/@cf/baai/bge-large-en-v1.5` | Embeddings | 1024 dimensions. Default model for `Str::toEmbeddings()` when `default_for_embeddings` is `workers-ai` |
 
 ## JSON Mode
 
@@ -139,7 +139,7 @@ With the `meirdick/prism-workers-ai` package installed, all major Prism features
 | Structured output | Works | Handles object content gracefully |
 | Tool calling | Works | Standard OpenAI function calling format |
 | Streaming | Works | SSE streaming via `/chat/completions` |
-| Embeddings | Works | Via `/embeddings` endpoint |
+| Embeddings | Works | Via `/embeddings` endpoint. Requires v0.4.1+ (null tokens fix). 1024 dims with `bge-large-en-v1.5` |
 | json_schema mode | Works | On supported models (see JSON Mode section) |
 | Reasoning content | Works | `additionalContent['thinking']` for text, `ThinkingEvent` for streaming |
 
@@ -148,6 +148,47 @@ With the `meirdick/prism-workers-ai` package installed, all major Prism features
 - **json_object mode** may not be enforced by Workers AI — use `json_schema` mode instead.
 - **Multimodal** (image content) is untested through `/compat` — may work with models like `@cf/meta/llama-4-scout-17b-16e-instruct` or `@cf/moonshotai/kimi-k2.5`.
 - **Responses API** — Some models (`@cf/openai/gpt-oss-120b`) support `/responses`, but most Workers AI models only support `/chat/completions`.
+
+### Embeddings with pgvector
+
+Workers AI embeddings work through the Laravel AI SDK's `Embeddings` class and `Str::toEmbeddings()`:
+
+```php
+// Set default_for_embeddings to workers-ai in config/ai.php
+// Then embeddings "just work":
+$embedding = Str::of('custody schedule modification')->toEmbeddings();
+// Returns array of 1024 floats
+
+// Or explicitly:
+$response = Embeddings::for(['text 1', 'text 2'])->generate('workers-ai');
+$response->embeddings; // [[0.123, ...], [0.456, ...]]
+```
+
+**pgvector storage:** Use `saveQuietly()`, not `updateQuietly()`, to store embeddings in pgvector columns — the model attribute setter is needed for proper vector casting:
+
+```php
+// WRONG — silently fails with pgvector:
+$model->updateQuietly(['embedding' => $embedding]);
+
+// CORRECT:
+$model->embedding = $embedding;
+$model->saveQuietly();
+```
+
+**Migration:** 1024 dimensions for `bge-large-en-v1.5`:
+```php
+Schema::ensureVectorExtensionExists();
+$table->vector('embedding', dimensions: 1024)->nullable()->index();
+```
+
+**Querying:**
+```php
+// Auto-embeds the query string via the default provider:
+$results = Task::query()
+    ->whereVectorSimilarTo('embedding', 'custody hearing preparation')
+    ->limit(10)
+    ->get();
+```
 
 ### What always works
 
