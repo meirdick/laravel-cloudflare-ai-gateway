@@ -308,6 +308,8 @@ These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects.
 
 - **The env var is `CLOUDFLARE_AI_API_TOKEN`, not `CLOUDFLARE_AI_API_KEY`.** Cloudflare's convention is "API Token" (scoped) vs "API Key" (global). Workers AI needs a scoped token with `Workers AI: Read` permission.
 
+- **`PrismGateway` may be removed in future `laravel/ai` versions.** Laravel AI is moving providers to direct gateways that bypass Prism. If `agent()` calls to `workers-ai` break after upgrading, update `meirdick/prism-workers-ai` first.
+
 - **Laravel AI SDK doesn't have `url` fields by default.** Unlike Prism PHP (where every provider has a `url` field reading from env), the Laravel AI SDK's default `config/ai.php` omits `url` entirely. You must add it with an `env()` fallback so gateway routing is opt-in via `.env`.
 
 - **Model names need the `workers-ai/` prefix through `/compat`.** The AI Gateway uses this prefix to route to the correct provider. Without it, the gateway doesn't know where to send the request. The response strips the prefix automatically.

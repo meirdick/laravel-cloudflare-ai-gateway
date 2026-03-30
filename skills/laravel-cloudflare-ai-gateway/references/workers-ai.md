@@ -194,6 +194,10 @@ $results = Task::query()
 
 Gateway routing for **paid providers** (OpenAI, Anthropic, Gemini, Groq, etc.) works perfectly through the SDK — no issues. The compatibility notes above are specific to Workers AI's `/compat` endpoint.
 
+## Future Compatibility
+
+Laravel AI is moving providers to direct gateways that bypass Prism. The `workers-ai` Laravel AI bridge currently depends on `PrismGateway`. Prism standalone usage is unaffected. If `agent()` calls break after a `laravel/ai` upgrade, update `meirdick/prism-workers-ai` for a compatible version.
+
 ## Limitations
 
 ### Llama 4 Scout multimodal
