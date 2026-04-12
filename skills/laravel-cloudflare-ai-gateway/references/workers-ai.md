@@ -38,10 +38,10 @@ The SDK appends `/chat/completions` automatically, so the final request goes to 
 
 **Install:**
 ```bash
-composer require meirdick/prism-workers-ai
+composer require "meirdick/prism-workers-ai:^0.4"
 ```
 
-This package provides a first-class `workers-ai` driver for Prism PHP that fixes three issues with the built-in `xai` driver:
+This package provides a first-class `workers-ai` driver for Prism PHP with reasoning model support, session affinity, and fixes for the built-in `xai` driver:
 
 1. **String content format** — The xAI driver wraps user content in `[{type: "text", text: "..."}]` (array format). Workers AI `/compat` expects a plain string for text-only messages. The `workers-ai` driver sends string content.
 2. **Object content in structured output** — `/compat` may return `content` as a JSON object instead of a string, causing a TypeError crash. The `workers-ai` driver handles this gracefully.
@@ -83,8 +83,9 @@ All model names must be prefixed with `workers-ai/` when routing through the AI 
 
 | Model | Use Case | Notes |
 |-------|----------|-------|
-| `workers-ai/@cf/moonshotai/kimi-k2.5` | **Frontier — smartest** | 256K context, tool calling, vision, structured output. Reasoning model (see below) |
-| `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast` | General purpose | Best balance of quality and speed |
+| `workers-ai/@cf/google/gemma-4-26b-a4b-it` | **Recommended default** | Reasoning model, fast, good quality. Uses `delta.reasoning` field |
+| `workers-ai/@cf/moonshotai/kimi-k2.5` | **Frontier — smartest** | 256K context, tool calling, vision, structured output. Uses `delta.reasoning_content` field |
+| `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast` | General purpose (no reasoning) | Best balance of quality and speed for non-reasoning tasks |
 | `workers-ai/@cf/meta/llama-3.1-8b-instruct` | Cheap/fast tasks | Smallest, fastest, lowest cost |
 | `workers-ai/@cf/qwen/qwq-32b` | Reasoning | Multi-step reasoning tasks |
 | `workers-ai/@cf/qwen/qwen2.5-coder-32b-instruct` | Code generation | Optimized for code |
@@ -116,18 +117,25 @@ Models not on this list (e.g., `@cf/qwen/qwq-32b`, `@cf/mistralai/mistral-small-
 - Use short descriptions
 - Avoid nullable schema fields — use empty strings instead
 
-## Reasoning Models (Kimi K2.5)
+## Reasoning Models (Gemma 4, Kimi K2.5)
 
-`@cf/moonshotai/kimi-k2.5` is a **reasoning model** — it thinks before answering. Responses contain:
-- `reasoning_content`: chain-of-thought (the model's thinking process)
-- `content`: the final answer
+Several Workers AI models support chain-of-thought reasoning — they think before answering. The response shape differs by model:
+
+| Model | Streaming field | Non-streaming field |
+|-------|----------------|-------------------|
+| Gemma 4 (`gemma-4-26b-a4b-it`) | `delta.reasoning` | `message.reasoning` |
+| Kimi K2.5 (`kimi-k2.5`) | `delta.reasoning_content` | `message.reasoning_content` |
+
+The `meirdick/prism-workers-ai` package (`^0.4`) handles both transparently via the `ExtractsThinking` trait — no per-model configuration needed.
 
 **Key considerations:**
-- **Reasoning tokens count against `max_tokens`.** If `max_tokens` is too low, all tokens go to reasoning and `content` comes back null (Prism returns empty string). Set `max_tokens` to **1000+ for simple tasks, 2000+ for complex ones.**
-- **`meirdick/prism-workers-ai` v0.3.0+** extracts `reasoning_content` and surfaces it in `$response->steps[0]->additionalContent['thinking']` for non-streaming, and as `ThinkingEvent` / `ThinkingStartEvent` / `ThinkingCompleteEvent` for streaming.
-- **Array content format works** — unlike other Workers AI models, Kimi K2.5 accepts Prism's `[{type: "text", text: "..."}]` format through `/compat`. No special handling needed.
+- **Reasoning tokens count against `max_tokens`.** If `max_tokens` is too low, all tokens go to reasoning and `content` comes back null/empty. Set `max_tokens` to **1000+ for simple tasks, 2000+ for complex ones.**
+- **Non-streaming:** Thinking is in `$response->steps[0]->additionalContent['thinking']`.
+- **Streaming:** Emits `ThinkingStartEvent` → `ThinkingEvent` (deltas) → `ThinkingCompleteEvent`, then text events. `StreamEndEvent.additionalContent['thinking']` has the full accumulated reasoning.
+- **If reasoning exhausts all tokens** (`finish_reason=length`, zero content), `ThinkingCompleteEvent` is still emitted (v0.4.4+ safeguard). Consumers can detect this via empty text + Length finish reason.
+- **`reasoning_effort` control:** Pass `->withProviderOptions(['reasoning_effort' => 'high'])` to influence how much the model reasons (model support varies).
 
-**Session affinity (prefix caching):** For multi-turn conversations, pass `x-session-affinity` header with a consistent session ID to route requests to the same model instance. This enables prefix caching (lower TTFT, discounted token costs).
+**Session affinity (prefix caching):** For multi-turn conversations, pass `->withProviderOptions(['session_affinity' => 'ses_' . $conversationId])` to route requests to the same Workers AI instance. This enables prefix caching (lower TTFT, discounted token costs). Off by default.
 
 ## SDK Compatibility
 
@@ -141,7 +149,9 @@ With the `meirdick/prism-workers-ai` package installed, all major Prism features
 | Streaming | Works | SSE streaming via `/chat/completions` |
 | Embeddings | Works | Via `/embeddings` endpoint. Requires v0.4.1+ (null tokens fix). 1024 dims with `bge-large-en-v1.5` |
 | json_schema mode | Works | On supported models (see JSON Mode section) |
-| Reasoning content | Works | `additionalContent['thinking']` for text, `ThinkingEvent` for streaming |
+| Reasoning content | Works | `additionalContent['thinking']` for text, `ThinkingEvent` for streaming. Supports both Gemma 4 (`reasoning`) and Kimi K2.5 (`reasoning_content`) field names |
+| Session affinity | Works | `->withProviderOptions(['session_affinity' => 'ses_...'])` for prefix caching |
+| Provider options | Works | `->withProviderOptions(['reasoning_effort' => 'high'])` forwarded to API |
 
 ### Remaining `/compat` notes
 
@@ -209,6 +219,8 @@ With the `workers-ai` driver, Workers AI can be used through the full SDK — no
 
 **Tier 1a — Workers AI small models (free/credits, lowest cost):** Chatbots, content suggestions, internal tools, embeddings, simple structured output. Models: Llama 3.1 8B, Llama 3.3 70B.
 
-**Tier 1b — Workers AI frontier (free/credits, higher cost):** Complex reasoning, tool calling, document analysis (up to 256K context), quality-critical tasks, vision, agentic workflows. Models: Kimi K2.5.
+**Tier 1b — Workers AI reasoning (free/credits, moderate cost):** General purpose with chain-of-thought reasoning, chat, structured output. Models: Gemma 4.
+
+**Tier 1c — Workers AI frontier (free/credits, higher cost):** Complex reasoning, tool calling, document analysis (up to 256K context), quality-critical tasks, vision, agentic workflows. Models: Kimi K2.5.
 
 **Tier 2 — Paid providers via AI Gateway:** Tasks requiring specific provider capabilities (e.g., extended thinking, provider-specific APIs), or when Workers AI models don't meet quality bar.

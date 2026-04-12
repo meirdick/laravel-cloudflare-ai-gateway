@@ -30,7 +30,7 @@ tags:
   - prism
 metadata:
   author: mdick85
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Cloudflare AI Gateway for Laravel
@@ -105,7 +105,7 @@ Ask which mode. If they choose anything other than pass-through (open), warn tha
 
 #### Question 3: Workers AI
 
-Explain: "Workers AI runs free open-source models (Llama, Qwen, Mistral, etc.) on Cloudflare's edge network. Free tier includes 10,000 neurons/day. It's great for chatbots, summaries, and internal tools where you don't need GPT-4/Claude-level quality."
+Explain: "Workers AI runs free open-source models (Gemma 4, Kimi K2.5, Llama, Qwen, etc.) on Cloudflare's edge network. Free tier includes 10,000 neurons/day. Models like Gemma 4 and Kimi K2.5 support chain-of-thought reasoning — the package surfaces these as streaming ThinkingStart/ThinkingEvent/ThinkingComplete events, matching how Anthropic and OpenAI handle extended thinking."
 
 Ask if they want to add Workers AI as a provider.
 
@@ -196,10 +196,10 @@ Use these env var names and default URLs:
 
 **First, install the Workers AI provider package:**
 ```bash
-composer require meirdick/prism-workers-ai
+composer require "meirdick/prism-workers-ai:^0.4"
 ```
 
-This provides a first-class `workers-ai` driver for Prism that handles Workers AI's content format differences and structured output quirks. See `references/workers-ai.md` for details.
+This provides a first-class `workers-ai` driver for Prism that handles Workers AI's content format differences, structured output quirks, and reasoning model support (ThinkingStart/ThinkingEvent/ThinkingComplete events, session affinity for prefix caching, `reasoning_effort` forwarding). Requires `^0.4` minimum. See `references/workers-ai.md` for details.
 
 **Laravel AI SDK** (`config/ai.php`):
 ```php
@@ -266,19 +266,26 @@ Laravel AI SDK: Change `'default'` in `config/ai.php` to `'workers-ai'`.
 
 #### Step 6: Verify Workers AI (if configured)
 
-After setup, verify Workers AI is working by running a quick test. Use `php artisan tinker` or a test route:
+After setup, verify Workers AI is working via `php artisan tinker`:
 
 ```php
-// Quick verification via tinker or a test route
-$response = Http::withToken(env('CLOUDFLARE_AI_API_TOKEN'))
-    ->post(env('WORKERS_AI_URL') . '/chat/completions', [
-        'model' => 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+// Direct HTTP test
+$response = Http::withToken(config('ai.providers.workers-ai.key'))
+    ->post(config('ai.providers.workers-ai.url') . '/chat/completions', [
+        'model' => 'workers-ai/@cf/google/gemma-4-26b-a4b-it',
         'messages' => [['role' => 'user', 'content' => 'Say hello in one word.']],
+        'max_tokens' => 100,
     ]);
+echo $response->json('choices.0.message.content');
 // Should return a short greeting
-```
 
-If the direct HTTP test works, also test through the SDK (the xai driver may send content in array format — if the `/compat` endpoint handles it, you're good). If SDK calls return garbled responses, see `references/workers-ai.md` "SDK Compatibility" for workarounds.
+// SDK test (Prism)
+$response = Prism::text()
+    ->using('workers-ai', 'workers-ai/@cf/google/gemma-4-26b-a4b-it')
+    ->withPrompt('Say hello in one word.')
+    ->asText();
+echo $response->text;
+```
 
 #### Step 7: Report
 
@@ -298,7 +305,7 @@ After completing all changes, report:
 
 These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects. Read these before executing — they'll save you from the most common failures.
 
-- **Workers AI requires the `meirdick/prism-workers-ai` package.** The built-in xAI driver sends user content as arrays and crashes on object content from structured output. The `workers-ai` driver handles these differences natively. Install it with `composer require meirdick/prism-workers-ai`.
+- **Workers AI requires the `meirdick/prism-workers-ai` package (`^0.4`).** The built-in xAI driver sends user content as arrays, crashes on object content from structured output, and has no reasoning model support. The `workers-ai` driver handles content format differences, reasoning/thinking events, session affinity, and `reasoning_effort` forwarding natively. Install with `composer require "meirdick/prism-workers-ai:^0.4"`.
 
 - **Do not use the `openai` driver for Workers AI.** The `openai` driver (as of Prism v4+ / laravel/ai v0.3+) sends requests to `/responses`, but Workers AI's `/compat` endpoint only speaks `/chat/completions`. Using `'driver' => 'openai'` causes a silent 500 error.
 
@@ -314,6 +321,12 @@ These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects.
 
 - **Model names need the `workers-ai/` prefix through `/compat`.** The AI Gateway uses this prefix to route to the correct provider. Without it, the gateway doesn't know where to send the request. The response strips the prefix automatically.
 
+- **Reasoning models (Gemma 4, Kimi K2.5) emit thinking tokens that count against `max_tokens`.** If `max_tokens` is too low, the model spends its entire budget on reasoning and returns empty content. Set `max_tokens` high enough (1000+) for reasoning models. The package emits `ThinkingStartEvent`/`ThinkingEvent`/`ThinkingCompleteEvent` for reasoning deltas and includes accumulated thinking in `StreamEndEvent.additionalContent['thinking']`.
+
+- **Different models use different reasoning field names.** Kimi K2.5 uses `delta.reasoning_content`, Gemma 4 uses `delta.reasoning`. The `ExtractsThinking` trait in `meirdick/prism-workers-ai` handles both transparently — no per-model configuration needed.
+
+- **Session affinity improves multi-turn performance.** Pass `->withProviderOptions(['session_affinity' => 'ses_' . $conversationId])` to route consecutive requests to the same Workers AI instance, enabling prefix caching (lower TTFT, discounted cached tokens). Off by default.
+
 - **Embeddings require `meirdick/prism-workers-ai` v0.4.1+.** Workers AI's `/compat/embeddings` endpoint omits `usage.total_tokens` from the response. Versions before v0.4.1 pass `null` to Laravel AI SDK's `EmbeddingsResponse(int $tokens)`, causing a TypeError. The fix defaults to `0`.
 
 - **Use `saveQuietly()` not `updateQuietly()` for pgvector columns.** `$model->updateQuietly(['embedding' => $array])` silently fails with pgvector — the array doesn't get cast to the vector format. Use `$model->embedding = $array; $model->saveQuietly();` instead.
@@ -328,13 +341,13 @@ These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects.
 // Using default provider (if set to workers-ai)
 $response = agent(instructions: 'You are helpful.')->prompt('Hello!');
 
-// Explicit provider and model
+// Explicit provider and model — Gemma 4 (recommended default, supports reasoning)
 $response = agent(instructions: 'You are helpful.')
-    ->prompt('Hello!', provider: 'workers-ai', model: 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+    ->prompt('Hello!', provider: 'workers-ai', model: 'workers-ai/@cf/google/gemma-4-26b-a4b-it');
 
 // Via attributes
 #[Provider('workers-ai')]
-#[Model('workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast')]
+#[Model('workers-ai/@cf/google/gemma-4-26b-a4b-it')]
 ```
 
 ### Workers AI in Prism PHP
@@ -342,7 +355,38 @@ $response = agent(instructions: 'You are helpful.')
 ```php
 use Prism\Prism\Facades\Prism;
 
-// Text generation
+// Text generation (Gemma 4 — reasoning model, emits thinking + content)
+Prism::text()
+    ->using('workers-ai', 'workers-ai/@cf/google/gemma-4-26b-a4b-it')
+    ->withPrompt('Hello!')
+    ->asText();
+// $response->steps[0]->additionalContent['thinking'] contains the reasoning chain
+
+// Streaming with reasoning events
+$stream = Prism::text()
+    ->using('workers-ai', 'workers-ai/@cf/google/gemma-4-26b-a4b-it')
+    ->withMaxTokens(2000)
+    ->withPrompt('Explain quantum entanglement.')
+    ->asStream();
+// Yields: ThinkingStartEvent → ThinkingEvent deltas → ThinkingCompleteEvent
+//         → TextStartEvent → TextDeltaEvent deltas → TextCompleteEvent → StreamEndEvent
+// StreamEndEvent.additionalContent['thinking'] has the full accumulated reasoning
+
+// With reasoning_effort control
+Prism::text()
+    ->using('workers-ai', 'workers-ai/@cf/moonshotai/kimi-k2.5')
+    ->withProviderOptions(['reasoning_effort' => 'high'])
+    ->withPrompt('Solve this step by step.')
+    ->asText();
+
+// With session affinity for multi-turn prefix caching
+Prism::text()
+    ->using('workers-ai', 'workers-ai/@cf/google/gemma-4-26b-a4b-it')
+    ->withProviderOptions(['session_affinity' => 'ses_' . $conversationId])
+    ->withPrompt($followUpMessage)
+    ->asText();
+
+// Non-reasoning model (no thinking overhead)
 Prism::text()
     ->using('workers-ai', 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast')
     ->withPrompt('Hello!')
@@ -350,7 +394,7 @@ Prism::text()
 
 // Structured output (works natively — no TypeError)
 Prism::structured()
-    ->using('workers-ai', 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast')
+    ->using('workers-ai', 'workers-ai/@cf/google/gemma-4-26b-a4b-it')
     ->withSchema($schema)
     ->withPrompt('Classify this intent.')
     ->generate();
@@ -361,6 +405,16 @@ Prism::embeddings()
     ->fromInput('Hello world')
     ->generate();
 ```
+
+### Recommended Models
+
+| Model | Use Case | Reasoning? |
+|-------|----------|------------|
+| `workers-ai/@cf/google/gemma-4-26b-a4b-it` | General purpose, chat, structured output | Yes |
+| `workers-ai/@cf/moonshotai/kimi-k2.5` | Complex reasoning, math, code | Yes |
+| `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Fast general purpose, no thinking overhead | No |
+| `workers-ai/@cf/meta/llama-3.1-8b-instruct` | Cheapest, simple tasks | No |
+| `workers-ai/@cf/baai/bge-large-en-v1.5` | Embeddings (1024 dims) | N/A |
 
 ### Embeddings in Laravel AI SDK
 
