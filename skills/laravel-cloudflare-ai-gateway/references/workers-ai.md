@@ -4,6 +4,8 @@ Workers AI runs open-source models on Cloudflare's global edge network. Free tie
 
 ## Endpoint: `/compat` vs `/workers-ai/v1`
 
+> **Laravel AI SDK projects can skip this section.** The native `meirdick/laravel-cf-workersai` package builds its own endpoint from `account_id` (+ optional `gateway`) config and speaks `/workers-ai/v1` in OpenAI format directly — no `/compat` URL, no model prefix. The endpoint mechanics below apply to Prism PHP via `WORKERS_AI_URL`.
+
 Workers AI has two endpoints through AI Gateway:
 
 | Endpoint | Path | Format | Recommended? |
@@ -34,9 +36,26 @@ The SDK appends `/chat/completions` automatically, so the final request goes to 
 
 **Important:** Do NOT add `/v1` after `/compat`. The URL `.../compat/v1/chat/completions` will return "No route for that URI".
 
-## Driver: `workers-ai` (via `meirdick/prism-workers-ai`)
+## Drivers: one package per framework
 
-**Install:**
+**Laravel AI SDK — `meirdick/laravel-cf-workersai` (native, recommended):**
+```bash
+composer require "meirdick/laravel-cf-workersai:^0.3"
+```
+
+A native `laravel/ai` provider (laravel/ai `^0.7 || ^0.8`, no Prism dependency). Text, embeddings, structured output, tool calling, streaming, reasoning replay across tool turns, retry policy (fails fast on transfer timeouts), session affinity, and truncation normalization (`finish_reason` → `Length`, 4096 default `max_completion_tokens`). Verified live against the production API directly and through AI Gateway.
+
+```php
+// config/ai.php — note: `key`, not `api_key`; no URL needed
+'workers-ai' => [
+    'driver' => 'workers-ai',
+    'key' => env('CLOUDFLARE_AI_API_TOKEN'),
+    'account_id' => env('CLOUDFLARE_ACCOUNT_ID'),
+    'gateway' => env('CLOUDFLARE_AI_GATEWAY'), // optional — omit for direct Workers AI
+],
+```
+
+**Prism PHP — `meirdick/prism-workers-ai`:**
 ```bash
 composer require "meirdick/prism-workers-ai:^0.4"
 ```
@@ -50,17 +69,10 @@ This package provides a first-class `workers-ai` driver for Prism PHP with reaso
 **Do NOT use the `openai` driver.** It uses `/responses` (as of Prism v4+ / laravel/ai v0.3+), which Workers AI doesn't support. This causes a silent 500 error.
 
 ```php
-// Laravel AI SDK (config/ai.php)
-'workers-ai' => [
-    'driver' => 'workers-ai',
-    'key' => env('CLOUDFLARE_AI_API_TOKEN'),
-    'url' => env('WORKERS_AI_URL'),
-],
-
 // Prism PHP (config/prism.php)
 'workers-ai' => [
     'api_key' => env('CLOUDFLARE_AI_API_TOKEN', ''),
-    'url' => env('WORKERS_AI_URL'),
+    'url' => env('WORKERS_AI_URL'), // .../compat
 ],
 ```
 
@@ -84,7 +96,7 @@ All model names must be prefixed with `workers-ai/` when routing through the AI 
 | Model | Use Case | Notes |
 |-------|----------|-------|
 | `workers-ai/@cf/google/gemma-4-26b-a4b-it` | **Recommended default** | Reasoning model, fast, good quality. Uses `delta.reasoning` field |
-| `workers-ai/@cf/moonshotai/kimi-k2.5` | **Frontier — smartest** | 256K context, tool calling, vision, structured output. Uses `delta.reasoning_content` field |
+| `workers-ai/@cf/moonshotai/kimi-k2.6` | **Frontier — smartest** | 256K context, tool calling, vision, structured output. Uses `delta.reasoning_content` field |
 | `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast` | General purpose (no reasoning) | Best balance of quality and speed for non-reasoning tasks |
 | `workers-ai/@cf/meta/llama-3.1-8b-instruct` | Cheap/fast tasks | Smallest, fastest, lowest cost |
 | `workers-ai/@cf/qwen/qwq-32b` | Reasoning | Multi-step reasoning tasks |
@@ -99,7 +111,7 @@ All model names must be prefixed with `workers-ai/` when routing through the AI 
 Workers AI supports JSON mode (`response_format: {type: 'json_schema', ...}`) only with specific models:
 
 **Supported models:**
-- `@cf/moonshotai/kimi-k2.5`
+- `@cf/moonshotai/kimi-k2.6`
 - `@cf/meta/llama-3.3-70b-instruct-fp8-fast`
 - `@cf/meta/llama-3.1-70b-instruct`
 - `@cf/meta/llama-3.1-8b-instruct` / `llama-3.1-8b-instruct-fast`
@@ -117,14 +129,14 @@ Models not on this list (e.g., `@cf/qwen/qwq-32b`, `@cf/mistralai/mistral-small-
 - Use short descriptions
 - Avoid nullable schema fields — use empty strings instead
 
-## Reasoning Models (Gemma 4, Kimi K2.5)
+## Reasoning Models (Gemma 4, Kimi K2.6)
 
 Several Workers AI models support chain-of-thought reasoning — they think before answering. The response shape differs by model:
 
 | Model | Streaming field | Non-streaming field |
 |-------|----------------|-------------------|
 | Gemma 4 (`gemma-4-26b-a4b-it`) | `delta.reasoning` | `message.reasoning` |
-| Kimi K2.5 (`kimi-k2.5`) | `delta.reasoning_content` | `message.reasoning_content` |
+| Kimi K2.6 (`kimi-k2.6`) | `delta.reasoning_content` | `message.reasoning_content` |
 
 The `meirdick/prism-workers-ai` package (`^0.4`) handles both transparently via the `ExtractsThinking` trait — no per-model configuration needed.
 
@@ -139,7 +151,7 @@ The `meirdick/prism-workers-ai` package (`^0.4`) handles both transparently via 
 
 ## SDK Compatibility
 
-With the `meirdick/prism-workers-ai` package installed, all major Prism features work through Workers AI:
+With the right package installed, all major SDK features work through Workers AI. The table below is the Prism (`prism-workers-ai`) matrix; the native `laravel-cf-workersai` package supports the same surface for laravel/ai (text, structured output, tools, streaming, embeddings) and is covered by a live integration suite.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
@@ -149,14 +161,14 @@ With the `meirdick/prism-workers-ai` package installed, all major Prism features
 | Streaming | Works | SSE streaming via `/chat/completions` |
 | Embeddings | Works | Via `/embeddings` endpoint. Requires v0.4.1+ (null tokens fix). 1024 dims with `bge-large-en-v1.5` |
 | json_schema mode | Works | On supported models (see JSON Mode section) |
-| Reasoning content | Works | `additionalContent['thinking']` for text, `ThinkingEvent` for streaming. Supports both Gemma 4 (`reasoning`) and Kimi K2.5 (`reasoning_content`) field names |
+| Reasoning content | Works | `additionalContent['thinking']` for text, `ThinkingEvent` for streaming. Supports both Gemma 4 (`reasoning`) and Kimi K2.6 (`reasoning_content`) field names |
 | Session affinity | Works | `->withProviderOptions(['session_affinity' => 'ses_...'])` for prefix caching |
 | Provider options | Works | `->withProviderOptions(['reasoning_effort' => 'high'])` forwarded to API |
 
 ### Remaining `/compat` notes
 
 - **json_object mode** may not be enforced by Workers AI — use `json_schema` mode instead.
-- **Multimodal** (image content) is untested through `/compat` — may work with models like `@cf/meta/llama-4-scout-17b-16e-instruct` or `@cf/moonshotai/kimi-k2.5`.
+- **Multimodal** (image content) is untested through `/compat` — may work with models like `@cf/meta/llama-4-scout-17b-16e-instruct` or `@cf/moonshotai/kimi-k2.6`.
 - **Responses API** — Some models (`@cf/openai/gpt-oss-120b`) support `/responses`, but most Workers AI models only support `/chat/completions`.
 
 ### Embeddings with pgvector
@@ -206,7 +218,7 @@ Gateway routing for **paid providers** (OpenAI, Anthropic, Gemini, Groq, etc.) w
 
 ## Future Compatibility
 
-Laravel AI is moving providers to direct gateways that bypass Prism. The `workers-ai` Laravel AI bridge currently depends on `PrismGateway`. Prism standalone usage is unaffected. If `agent()` calls break after a `laravel/ai` upgrade, update `meirdick/prism-workers-ai` for a compatible version.
+The PrismGateway-based laravel/ai bridge is history: Laravel AI SDK projects should use the native `meirdick/laravel-cf-workersai` package, which implements laravel/ai's gateway contracts directly (no Prism in the loop). Watch laravel/ai PR #652 (`TurnTextGateway`) — when the single-turn gateway refactor lands upstream, update `laravel-cf-workersai` before bumping `laravel/ai`. Prism standalone usage via `meirdick/prism-workers-ai` is unaffected.
 
 ## Limitations
 
@@ -221,6 +233,6 @@ With the `workers-ai` driver, Workers AI can be used through the full SDK — no
 
 **Tier 1b — Workers AI reasoning (free/credits, moderate cost):** General purpose with chain-of-thought reasoning, chat, structured output. Models: Gemma 4.
 
-**Tier 1c — Workers AI frontier (free/credits, higher cost):** Complex reasoning, tool calling, document analysis (up to 256K context), quality-critical tasks, vision, agentic workflows. Models: Kimi K2.5.
+**Tier 1c — Workers AI frontier (free/credits, higher cost):** Complex reasoning, tool calling, document analysis (up to 256K context), quality-critical tasks, vision, agentic workflows. Models: Kimi K2.6.
 
 **Tier 2 — Paid providers via AI Gateway:** Tasks requiring specific provider capabilities (e.g., extended thinking, provider-specific APIs), or when Workers AI models don't meet quality bar.

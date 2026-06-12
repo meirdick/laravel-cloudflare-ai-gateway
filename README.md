@@ -5,8 +5,8 @@ A Claude Code skill that configures Laravel and PHP projects to route AI traffic
 ## What it does
 
 - **Routes AI traffic through Cloudflare AI Gateway** — rewrites provider base URLs so all requests (OpenAI, Anthropic, Gemini, etc.) pass through your gateway for logging, caching, and rate limiting
-- **Adds Workers AI as a free provider** — configures Cloudflare's free open-source models (Llama, Qwen, Mistral) as a provider in your Laravel app
-- **Supports both frameworks** — works with [Laravel AI SDK](https://github.com/laravel/ai) (`laravel/ai`) and [Prism PHP](https://github.com/prism-php/prism) (`prism-php/prism`)
+- **Adds Workers AI as a free provider** — configures Cloudflare's free open-source models (Llama, Gemma, Kimi, Qwen) as a provider in your Laravel app
+- **Supports both frameworks** — [Laravel AI SDK](https://github.com/laravel/ai) projects get the native [`meirdick/laravel-cf-workersai`](https://github.com/meirdick/laravel-cf-workersai) driver; [Prism PHP](https://github.com/prism-php/prism) projects get [`meirdick/prism-workers-ai`](https://github.com/meirdick/prism-workers-ai)
 
 ## Install
 

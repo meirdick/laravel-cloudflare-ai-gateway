@@ -30,7 +30,7 @@ tags:
   - prism
 metadata:
   author: mdick85
-  version: "1.1.0"
+  version: "1.2.0"
 ---
 
 # Cloudflare AI Gateway for Laravel
@@ -105,7 +105,7 @@ Ask which mode. If they choose anything other than pass-through (open), warn tha
 
 #### Question 3: Workers AI
 
-Explain: "Workers AI runs free open-source models (Gemma 4, Kimi K2.5, Llama, Qwen, etc.) on Cloudflare's edge network. Free tier includes 10,000 neurons/day. Models like Gemma 4 and Kimi K2.5 support chain-of-thought reasoning — the package surfaces these as streaming ThinkingStart/ThinkingEvent/ThinkingComplete events, matching how Anthropic and OpenAI handle extended thinking."
+Explain: "Workers AI runs free open-source models (Gemma 4, Kimi K2.6, Llama, Qwen, etc.) on Cloudflare's edge network. Free tier includes 10,000 neurons/day. Models like Gemma 4 and Kimi K2.6 support chain-of-thought reasoning, surfaced as native reasoning/thinking stream events. Laravel AI SDK projects get a native `workers-ai` driver via `meirdick/laravel-cf-workersai`; Prism PHP projects use `meirdick/prism-workers-ai`."
 
 Ask if they want to add Workers AI as a provider.
 
@@ -151,7 +151,7 @@ Approve this plan? (yes/no)
 | Mistral | `/mistral/v1` | `https://api.mistral.ai/v1` |
 | xAI (Grok) | `/grok/v1` | `https://api.x.ai/v1` |
 | DeepSeek | `/deepseek/v1` | `https://api.deepseek.com/v1` |
-| Workers AI | `/compat` | N/A (Cloudflare-native) |
+| Workers AI (Prism only) | `/compat` | N/A — Laravel AI SDK uses `meirdick/laravel-cf-workersai` (`account_id` + `gateway` config, no URL) |
 
 The gateway base URL pattern is:
 ```
@@ -194,38 +194,37 @@ Use these env var names and default URLs:
 
 #### Step 2: Workers AI provider (if requested)
 
-**First, install the Workers AI provider package:**
+The package depends on the framework. **These are different packages — do not mix them up.**
+
+**Laravel AI SDK** — install the native provider:
 ```bash
-composer require "meirdick/prism-workers-ai:^0.4"
+composer require "meirdick/laravel-cf-workersai:^0.3"
 ```
 
-This provides a first-class `workers-ai` driver for Prism that handles Workers AI's content format differences, structured output quirks, and reasoning model support (ThinkingStart/ThinkingEvent/ThinkingComplete events, session affinity for prefix caching, `reasoning_effort` forwarding). Requires `^0.4` minimum. See `references/workers-ai.md` for details.
+This is a native `laravel/ai` provider (no Prism dependency, no `config/prism.php`, no gateway URL to compose). It supports text, embeddings, structured output, tool calling, streaming, reasoning replay across tool turns, retries, and session affinity. Requires `laravel/ai ^0.7 || ^0.8`. Configure in `config/ai.php`:
 
-**Laravel AI SDK** (`config/ai.php`):
 ```php
 'workers-ai' => [
     'driver' => 'workers-ai',
     'key' => env('CLOUDFLARE_AI_API_TOKEN'),
-    'url' => env('WORKERS_AI_URL'),
+    'account_id' => env('CLOUDFLARE_ACCOUNT_ID'),
+    'gateway' => env('CLOUDFLARE_AI_GATEWAY'), // optional — omit to hit Workers AI directly
 ],
 ```
 
-**Important:** Projects using Laravel AI SDK also need a `config/prism.php` entry so Prism's `PrismManager` can resolve the provider config. If `config/prism.php` doesn't exist, publish it first with `php artisan vendor:publish --tag=prism-config`. Then add the workers-ai provider to `config/prism.php` under `providers`:
+The package builds the endpoint from `account_id` (+ optional `gateway`); model names are plain `@cf/...` with **no `workers-ai/` prefix**. The credential key is `key` (laravel/ai convention) — not `api_key`.
+
+**Prism PHP** — install the Prism provider:
+```bash
+composer require "meirdick/prism-workers-ai:^0.4"
+```
+
+This provides a first-class `workers-ai` driver for Prism that handles Workers AI's content format differences, structured output quirks, and reasoning model support (ThinkingStart/ThinkingEvent/ThinkingComplete events, session affinity for prefix caching, `reasoning_effort` forwarding). Configure in `config/prism.php`:
 
 ```php
 'workers-ai' => [
     'api_key' => env('CLOUDFLARE_AI_API_TOKEN', ''),
-    'url' => env('WORKERS_AI_URL'),
-],
-```
-
-Both entries are required — `ai.php` for the Laravel AI SDK driver mapping, `prism.php` for the underlying Prism provider resolution.
-
-**Prism PHP only** (`config/prism.php`) — if the project uses Prism directly without Laravel AI SDK, only this entry is needed:
-```php
-'workers-ai' => [
-    'api_key' => env('CLOUDFLARE_AI_API_TOKEN', ''),
-    'url' => env('WORKERS_AI_URL'),
+    'url' => env('WORKERS_AI_URL'), // .../compat — model names need the workers-ai/ prefix
 ],
 ```
 
@@ -246,7 +245,16 @@ XAI_URL=https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway-name}/grok/v1
 DEEPSEEK_URL=https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway-name}/deepseek/v1
 ```
 
-If Workers AI was requested, also append:
+If Workers AI was requested, also append. For **Laravel AI SDK** (native package — no URL needed):
+```env
+
+# === Workers AI (free open-source models) ===
+CLOUDFLARE_ACCOUNT_ID={account-id}
+CLOUDFLARE_AI_API_TOKEN=
+CLOUDFLARE_AI_GATEWAY={gateway-name}
+```
+
+For **Prism PHP**:
 ```env
 
 # === Workers AI (free open-source models) ===
@@ -269,23 +277,22 @@ Laravel AI SDK: Change `'default'` in `config/ai.php` to `'workers-ai'`.
 After setup, verify Workers AI is working via `php artisan tinker`:
 
 ```php
-// Direct HTTP test
-$response = Http::withToken(config('ai.providers.workers-ai.key'))
-    ->post(config('ai.providers.workers-ai.url') . '/chat/completions', [
-        'model' => 'workers-ai/@cf/google/gemma-4-26b-a4b-it',
-        'messages' => [['role' => 'user', 'content' => 'Say hello in one word.']],
-        'max_tokens' => 100,
-    ]);
-echo $response->json('choices.0.message.content');
-// Should return a short greeting
+// Laravel AI SDK (laravel-cf-workersai) — note: no workers-ai/ model prefix
+use function Laravel\Ai\agent;
 
-// SDK test (Prism)
+$response = agent(instructions: 'You are a helpful assistant.')
+    ->prompt('Say hello in one word.', provider: 'workers-ai', model: '@cf/meta/llama-3.1-8b-instruct');
+echo $response->text;
+
+// Prism PHP (prism-workers-ai) — model prefix required through /compat
 $response = Prism::text()
     ->using('workers-ai', 'workers-ai/@cf/google/gemma-4-26b-a4b-it')
     ->withPrompt('Say hello in one word.')
     ->asText();
 echo $response->text;
 ```
+
+Then confirm the requests appear in the gateway dashboard (AI > AI Gateway > [gateway-name] > Logs).
 
 #### Step 7: Report
 
@@ -303,51 +310,73 @@ After completing all changes, report:
 
 ## Gotchas
 
-These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects. Read these before executing — they'll save you from the most common failures.
+These are hard-won lessons from deploying AI Gateway across 8+ Laravel projects, plus live stress-testing against the production Workers AI API (2026-06-11). Read these before executing — they'll save you from the most common failures.
 
-- **Workers AI requires the `meirdick/prism-workers-ai` package (`^0.4`).** The built-in xAI driver sends user content as arrays, crashes on object content from structured output, and has no reasoning model support. The `workers-ai` driver handles content format differences, reasoning/thinking events, session affinity, and `reasoning_effort` forwarding natively. Install with `composer require "meirdick/prism-workers-ai:^0.4"`.
+### Both frameworks
 
-- **Do not use the `openai` driver for Workers AI.** The `openai` driver (as of Prism v4+ / laravel/ai v0.3+) sends requests to `/responses`, but Workers AI's `/compat` endpoint only speaks `/chat/completions`. Using `'driver' => 'openai'` causes a silent 500 error.
-
-- **Workers AI URL is `.../compat` — no trailing `/v1`.** The SDK appends `/chat/completions` automatically. If you add `/v1`, the final URL becomes `.../compat/v1/chat/completions` which returns "No route for that URI". The correct base URL ends at `/compat`.
-
+- **Do not use the `openai` driver for Workers AI.** The `openai` driver (as of Prism v4+ / laravel/ai v0.3+) sends requests to `/responses`, but Workers AI only speaks `/chat/completions`. Using `'driver' => 'openai'` causes a silent 500 error.
 - **Gemini URL must include `/v1beta/models`.** Unlike other providers where the gateway path is just the provider name (e.g., `/openai`), Gemini requires `.../google-ai-studio/v1beta/models` because Gemini's API expects this prefix in every request path.
-
 - **The env var is `CLOUDFLARE_AI_API_TOKEN`, not `CLOUDFLARE_AI_API_KEY`.** Cloudflare's convention is "API Token" (scoped) vs "API Key" (global). Workers AI needs a scoped token with `Workers AI: Read` permission.
+- **Model choice matters for tool calling.** Verified live: `@cf/meta/llama-3.3-70b-instruct-fp8-fast` **never emits tool calls** — it answers in prose instead. Use `@cf/meta/llama-4-scout-17b-16e-instruct` or `@cf/openai/gpt-oss-120b` for tool-using agents. Even those only *choose* to call a tool some of the time under `tool_choice: auto` — pass `tool_choice: required` (via provider options) when the tool must run.
+- **Reasoning models (Gemma 4, Kimi K2.6) emit thinking tokens that count against `max_tokens`.** If the budget is too low, the model spends it all on reasoning and returns empty content. Set the budget high enough (1000+) for reasoning models.
+- **Reasoning models are slow.** Kimi K2.6 has been observed taking 45s+ on small prompts; structured 70B requests can exceed 60s under load. The default timeout in both SDKs is 60s — raise it (`#[Timeout(120)]` in laravel/ai) for big/reasoning models.
 
-- **`PrismGateway` may be removed in future `laravel/ai` versions.** Laravel AI is moving providers to direct gateways that bypass Prism. If `agent()` calls to `workers-ai` break after upgrading, update `meirdick/prism-workers-ai` first.
+### Laravel AI SDK (`meirdick/laravel-cf-workersai`)
 
-- **Laravel AI SDK doesn't have `url` fields by default.** Unlike Prism PHP (where every provider has a `url` field reading from env), the Laravel AI SDK's default `config/ai.php` omits `url` entirely. You must add it with an `env()` fallback so gateway routing is opt-in via `.env`.
+- **The credential key is `key`, not `api_key`** — matching every first-party laravel/ai provider. (`api_key` is accepted as a fallback since v0.3.0, but configs written against the v0.2.0 docs crashed.)
+- **No `workers-ai/` model prefix.** The package routes via `account_id` + `gateway` config, not the `/compat` endpoint, so model names are plain `@cf/...`.
+- **No `config/prism.php` needed.** Older versions of this skill described a Prism bridge; the native package (v0.3.0+, laravel/ai `^0.7 || ^0.8`) has no Prism dependency. If you find a stale `prism.php` workers-ai entry from a previous setup, it can be removed.
+- **Truncation is surfaced, not silent.** Cloudflare misreports budget-exhausted completions as `finish_reason: "stop"`; the package normalizes them to `FinishReason::Length` and defaults `max_completion_tokens` to 4096 (Cloudflare's own default is 256 — far too small for structured output). Override with `default_max_tokens` in the provider config.
+- **Timeouts fail fast.** Since v0.3.0 the retry policy does not retry transfer timeouts (previously a 60s timeout became ~3 minutes of wall time across 3 attempts). Connect failures and 502/503/504 are still retried with backoff.
+- **A forced `tool_choice` relaxes to `auto` on follow-up turns automatically** — otherwise the model would be forced to call a tool again instead of answering, looping until max-steps with empty text.
+- **Session affinity** is a config/provider-options key (`session_affinity`), sent as the `x-session-affinity` header for prefix caching on multi-turn conversations.
 
+### Prism PHP (`meirdick/prism-workers-ai`)
+
+- **Workers AI requires the package (`^0.4`).** The built-in xAI driver sends user content as arrays, crashes on object content from structured output, and has no reasoning model support. Install with `composer require "meirdick/prism-workers-ai:^0.4"`.
+- **Workers AI URL is `.../compat` — no trailing `/v1`.** The SDK appends `/chat/completions` automatically. If you add `/v1`, the final URL becomes `.../compat/v1/chat/completions` which returns "No route for that URI".
 - **Model names need the `workers-ai/` prefix through `/compat`.** The AI Gateway uses this prefix to route to the correct provider. Without it, the gateway doesn't know where to send the request. The response strips the prefix automatically.
-
-- **Reasoning models (Gemma 4, Kimi K2.5) emit thinking tokens that count against `max_tokens`.** If `max_tokens` is too low, the model spends its entire budget on reasoning and returns empty content. Set `max_tokens` high enough (1000+) for reasoning models. The package emits `ThinkingStartEvent`/`ThinkingEvent`/`ThinkingCompleteEvent` for reasoning deltas and includes accumulated thinking in `StreamEndEvent.additionalContent['thinking']`.
-
-- **Different models use different reasoning field names.** Kimi K2.5 uses `delta.reasoning_content`, Gemma 4 uses `delta.reasoning`. The `ExtractsThinking` trait in `meirdick/prism-workers-ai` handles both transparently — no per-model configuration needed.
-
-- **Session affinity improves multi-turn performance.** Pass `->withProviderOptions(['session_affinity' => 'ses_' . $conversationId])` to route consecutive requests to the same Workers AI instance, enabling prefix caching (lower TTFT, discounted cached tokens). Off by default.
-
-- **Embeddings require `meirdick/prism-workers-ai` v0.4.1+.** Workers AI's `/compat/embeddings` endpoint omits `usage.total_tokens` from the response. Versions before v0.4.1 pass `null` to Laravel AI SDK's `EmbeddingsResponse(int $tokens)`, causing a TypeError. The fix defaults to `0`.
-
+- **Different models use different reasoning field names.** Kimi uses `delta.reasoning_content`, Gemma 4 uses `delta.reasoning`. The `ExtractsThinking` trait handles both transparently.
+- **Session affinity:** pass `->withProviderOptions(['session_affinity' => 'ses_' . $conversationId])` to route consecutive requests to the same Workers AI instance for prefix caching.
+- **Embeddings require v0.4.1+.** Workers AI's `/compat/embeddings` endpoint omits `usage.total_tokens`; earlier versions crashed with a TypeError.
 - **Use `saveQuietly()` not `updateQuietly()` for pgvector columns.** `$model->updateQuietly(['embedding' => $array])` silently fails with pgvector — the array doesn't get cast to the vector format. Use `$model->embedding = $array; $model->saveQuietly();` instead.
-
----
 
 ## Usage Examples
 
-### Workers AI in Laravel AI SDK
+### Workers AI in Laravel AI SDK (`meirdick/laravel-cf-workersai`)
+
+Model names are plain `@cf/...` — **no `workers-ai/` prefix** (the native package routes via config, not the `/compat` endpoint).
 
 ```php
 // Using default provider (if set to workers-ai)
 $response = agent(instructions: 'You are helpful.')->prompt('Hello!');
 
-// Explicit provider and model — Gemma 4 (recommended default, supports reasoning)
+// Explicit provider and model
 $response = agent(instructions: 'You are helpful.')
-    ->prompt('Hello!', provider: 'workers-ai', model: 'workers-ai/@cf/google/gemma-4-26b-a4b-it');
+    ->prompt('Hello!', provider: 'workers-ai', model: '@cf/google/gemma-4-26b-a4b-it');
 
 // Via attributes
 #[Provider('workers-ai')]
-#[Model('workers-ai/@cf/google/gemma-4-26b-a4b-it')]
+#[Model('@cf/google/gemma-4-26b-a4b-it')]
+
+// Tool-using agent: pick a tool-capable model and force the call
+// (llama-3.3-70b never emits tool calls; auto is flaky on the rest)
+#[Provider('workers-ai')]
+#[Model('@cf/meta/llama-4-scout-17b-16e-instruct')]
+class NumberAgent implements Agent, HasProviderOptions, HasTools
+{
+    public function providerOptions(Lab|string $provider): array
+    {
+        // Custom drivers arrive as a string, not a Lab enum case.
+        // The package relaxes this to 'auto' on follow-up turns automatically.
+        return $provider === 'workers-ai' ? ['tool_choice' => 'required'] : [];
+    }
+    // ...
+}
+
+// Slow/reasoning models need a higher timeout (laravel/ai defaults to 60s)
+#[Timeout(120)]
+#[Model('@cf/moonshotai/kimi-k2.6')]
 ```
 
 ### Workers AI in Prism PHP
@@ -374,7 +403,7 @@ $stream = Prism::text()
 
 // With reasoning_effort control
 Prism::text()
-    ->using('workers-ai', 'workers-ai/@cf/moonshotai/kimi-k2.5')
+    ->using('workers-ai', 'workers-ai/@cf/moonshotai/kimi-k2.6')
     ->withProviderOptions(['reasoning_effort' => 'high'])
     ->withPrompt('Solve this step by step.')
     ->asText();
@@ -408,13 +437,17 @@ Prism::embeddings()
 
 ### Recommended Models
 
-| Model | Use Case | Reasoning? |
-|-------|----------|------------|
-| `workers-ai/@cf/google/gemma-4-26b-a4b-it` | General purpose, chat, structured output | Yes |
-| `workers-ai/@cf/moonshotai/kimi-k2.5` | Complex reasoning, math, code | Yes |
-| `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Fast general purpose, no thinking overhead | No |
-| `workers-ai/@cf/meta/llama-3.1-8b-instruct` | Cheapest, simple tasks | No |
-| `workers-ai/@cf/baai/bge-large-en-v1.5` | Embeddings (1024 dims) | N/A |
+Names below are the plain Workers AI model IDs (Laravel AI SDK usage). For Prism through `/compat`, prefix each with `workers-ai/`.
+
+| Model | Use Case | Reasoning? | Tool calls? |
+|-------|----------|------------|-------------|
+| `@cf/google/gemma-4-26b-a4b-it` | General purpose, chat, structured output | Yes | — |
+| `@cf/moonshotai/kimi-k2.6` | Complex reasoning, math, code (slow — raise timeout) | Yes | Yes |
+| `@cf/meta/llama-4-scout-17b-16e-instruct` | Tool-using agents, multimodal | No | Yes (use `tool_choice: required`) |
+| `@cf/openai/gpt-oss-120b` | Tool-using agents, reasoning | Yes | Yes |
+| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Fast general purpose, no thinking overhead | No | **Never** (verified live) |
+| `@cf/meta/llama-3.1-8b-instruct` | Cheapest, simple tasks | No | — |
+| `@cf/baai/bge-large-en-v1.5` | Embeddings (1024 dims) | N/A | N/A |
 
 ### Embeddings in Laravel AI SDK
 
@@ -442,7 +475,7 @@ $results = Model::query()
 
 ### Rollback
 
-Remove or comment out the `*_URL` env vars in `.env`. Requests fall back to provider default URLs. No code changes needed.
+Remove or comment out the `*_URL` env vars in `.env`. Requests fall back to provider default URLs. No code changes needed. For the native Workers AI provider, remove `gateway` from the config (or the `CLOUDFLARE_AI_GATEWAY` env var) to bypass the gateway and hit Workers AI directly.
 
 ---
 
